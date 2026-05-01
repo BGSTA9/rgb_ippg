@@ -6,7 +6,8 @@
   <title>rPPG · Cardiac Monitor</title>
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet"/>
   <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432234/camera_utils.js" crossorigin="anonymous"></script>
   <style>
     :root {
       --bg:       #04060d;
@@ -16,7 +17,6 @@
       --green-dim:#00a86b;
       --blue:     #0af;
       --red:      #ff3b6b;
-      --amber:    #ffb347;
       --text:     #8da3c0;
       --text-hi:  #cde0f5;
       --glow:     0 0 18px #00f5a080, 0 0 40px #00f5a030;
@@ -68,17 +68,14 @@
       display: inline-block;
       margin-right: 6px;
     }
-    @keyframes pulse-dot {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
     #clock { color: var(--blue); }
 
     /* ── Main Grid ── */
     main {
       display: grid;
       grid-template-columns: 3fr 2fr;
-      grid-template-rows: 35% 45% 20%;
+      grid-template-rows: 32% 38% 30%;
       gap: 1px;
       background: var(--border);
       overflow: hidden;
@@ -107,44 +104,22 @@
       align-items: center;
       justify-content: center;
     }
-    #cam-wrap {
-      position: relative;
-      width: 100%;
-      height: 100%;
-    }
+    #cam-wrap { position: relative; width: 100%; height: 100%; }
     #cam-feed {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
+      width: 100%; height: 100%;
+      object-fit: cover; display: block;
       filter: saturate(0.8) contrast(1.05);
     }
-    /* Scanline overlay */
     #cam-wrap::after {
       content: '';
       position: absolute; inset: 0;
       background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,0,0,0.08) 2px,
-        rgba(0,0,0,0.08) 4px
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px
       );
       pointer-events: none;
     }
-    /* Face box drawn by JS */
-    #face-canvas {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-    }
-    .no-signal {
-      color: var(--text);
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 0.85rem;
-      letter-spacing: 2px;
-      text-align: center;
-    }
+    #face-canvas { position: absolute; inset: 0; pointer-events: none; }
 
     /* ── HR Display ── */
     #hr-panel {
@@ -153,14 +128,11 @@
       align-items: center;
       justify-content: center;
       gap: 10px;
-      padding: 20px;
+      padding: 16px;
     }
-    .hr-ring-wrap {
-      position: relative;
-      width: 220px; height: 220px;
-    }
+    .hr-ring-wrap { position: relative; width: 190px; height: 190px; }
     .hr-ring {
-      width: 220px; height: 220px;
+      width: 190px; height: 190px;
       border-radius: 50%;
       border: 2px solid var(--border);
       position: relative;
@@ -185,7 +157,7 @@
     }
     .hr-number {
       font-family: 'Bebas Neue', sans-serif;
-      font-size: 6rem;
+      font-size: 5rem;
       color: var(--green);
       text-shadow: var(--glow);
       line-height: 1;
@@ -193,25 +165,20 @@
     }
     .hr-unit {
       font-family: 'Share Tech Mono', monospace;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       color: var(--green-dim);
       letter-spacing: 3px;
       text-align: center;
     }
     .hr-status {
-      font-size: 0.95rem;
-      font-weight: 700;
-      letter-spacing: 2px;
-      color: var(--text);
+      font-size: 0.85rem; font-weight: 700;
+      letter-spacing: 2px; color: var(--text);
     }
     .hr-status.normal { color: var(--green); }
     .hr-status.low    { color: var(--blue); }
     .hr-status.high   { color: var(--red); text-shadow: var(--glow-red); }
-
-    /* Heart icon */
     .heart-icon {
-      position: absolute;
-      bottom: 10px; right: 10px;
+      position: absolute; bottom: 10px; right: 10px;
       font-size: 1.2rem;
       animation: heartbeat 1s ease-in-out infinite;
       animation-play-state: paused;
@@ -219,53 +186,69 @@
     }
     .heart-icon.beating { animation-play-state: running; }
     @keyframes heartbeat {
-      0%   { transform: scale(1); }
-      14%  { transform: scale(1.2); }
-      28%  { transform: scale(1); }
-      42%  { transform: scale(1.1); }
-      70%  { transform: scale(1); }
-      100% { transform: scale(1); }
+      0%{transform:scale(1)} 14%{transform:scale(1.2)}
+      28%{transform:scale(1)} 42%{transform:scale(1.1)}
+      70%{transform:scale(1)} 100%{transform:scale(1)}
     }
 
     /* ── BVP Oscilloscope ── */
     #bvp-panel { padding-top: 36px; }
-    #bvp-canvas {
-      width: 100%;
-      height: calc(100% - 36px);
-      display: block;
-    }
-
-    /* ── HR History Chart ── */
-    #history-panel { padding: 28px 14px 10px; }
-    #hr-chart { width: 100% !important; height: calc(100% - 28px) !important; }
-
-    /* ── Corner decorations ── */
-    .corner {
-      position: absolute;
-      width: 12px; height: 12px;
-      border-color: var(--green);
-      border-style: solid;
-      opacity: 0.5;
-    }
-    .corner.tl { top: 8px; left: 8px;  border-width: 1px 0 0 1px; }
-    .corner.tr { top: 8px; right: 8px; border-width: 1px 1px 0 0; }
-    .corner.bl { bottom: 8px; left: 8px;  border-width: 0 0 1px 1px; }
-    .corner.br { bottom: 8px; right: 8px; border-width: 0 1px 1px 0; }
-
-    /* ── Overlay grid lines for oscilloscope ── */
+    #bvp-canvas { width: 100%; height: calc(100% - 36px); display: block; }
     .grid-overlay {
-      position: absolute;
-      inset: 36px 0 0 0;
+      position: absolute; inset: 36px 0 0 0;
       background-image:
         linear-gradient(var(--border) 1px, transparent 1px),
         linear-gradient(90deg, var(--border) 1px, transparent 1px);
       background-size: 40px 30px;
-      pointer-events: none;
-      opacity: 0.5;
+      pointer-events: none; opacity: 0.5;
     }
+
+    /* ── Facial Perfusion Map ── */
+    #mesh-panel { }
+    #mesh-canvas { width: 100%; height: 100%; display: block; }
+
+    #colorbar {
+      position: absolute;
+      bottom: 10px; left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.58rem;
+      color: var(--text);
+      z-index: 3;
+    }
+    #colorbar-gradient {
+      width: 72px; height: 5px;
+      border-radius: 3px;
+      background: linear-gradient(90deg,
+        #00008b,#0000ff,#00ffff,#00ff00,#ffff00,#ff8000,#ff0000);
+    }
+
+    #mesh-status {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.68rem; letter-spacing: 2px;
+      color: var(--green-dim); text-align: center;
+      pointer-events: none; z-index: 2;
+    }
+
+    /* ── Corners ── */
+    .corner {
+      position: absolute; width: 12px; height: 12px;
+      border-color: var(--green); border-style: solid; opacity: 0.5;
+    }
+    .corner.tl { top: 8px;    left: 8px;  border-width: 1px 0 0 1px; }
+    .corner.tr { top: 8px;    right: 8px; border-width: 1px 1px 0 0; }
+    .corner.bl { bottom: 8px; left: 8px;  border-width: 0 0 1px 1px; }
+    .corner.br { bottom: 8px; right: 8px; border-width: 0 1px 1px 0; }
   </style>
 </head>
 <body>
+
+<video id="mp-video" playsinline style="display:none"></video>
 
 <header>
   <div class="logo">rPPG <span>· CARDIAC MONITOR</span></div>
@@ -284,10 +267,8 @@
       <img id="cam-feed" alt=""/>
       <canvas id="face-canvas"></canvas>
     </div>
-    <div class="corner tl"></div>
-    <div class="corner tr"></div>
-    <div class="corner bl"></div>
-    <div class="corner br"></div>
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
   </div>
 
   <!-- HR Display -->
@@ -316,69 +297,69 @@
     <div class="corner bl"></div><div class="corner br"></div>
   </div>
 
-  <!-- HR History -->
-  <div class="panel" id="history-panel">
-    <div class="panel-label">HR TREND · LAST 60s</div>
-    <canvas id="hr-chart"></canvas>
+  <!-- Facial Perfusion Map -->
+  <div class="panel" id="mesh-panel">
+    <div class="panel-label">FACIAL PERFUSION MAP</div>
+    <div id="mesh-status">INITIALIZING FACE MESH...</div>
+    <canvas id="mesh-canvas"></canvas>
+    <div id="colorbar">
+      <span>LOW</span>
+      <div id="colorbar-gradient"></div>
+      <span>HIGH</span>
+    </div>
     <div class="corner tl"></div><div class="corner tr"></div>
     <div class="corner bl"></div><div class="corner br"></div>
   </div>
 </main>
 
 <script>
-// ── Clock ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════
+//  CLOCK
+// ═══════════════════════════════════════════
 function updateClock() {
-  const now = new Date();
   document.getElementById('clock').textContent =
-    now.toTimeString().slice(0,8);
+    new Date().toTimeString().slice(0, 8);
 }
 setInterval(updateClock, 1000); updateClock();
 
-// ── Socket ─────────────────────────────────────────────────────
-const socket = io();
+// ═══════════════════════════════════════════
+//  SOCKET
+// ═══════════════════════════════════════════
+const socket   = io();
 const statusEl = document.getElementById('status-text');
-
 socket.on('connect',    () => { statusEl.textContent = 'LIVE'; });
 socket.on('disconnect', () => { statusEl.textContent = 'OFFLINE'; });
 
-// ── Camera Feed ────────────────────────────────────────────────
+// ═══════════════════════════════════════════
+//  CAMERA FEED + FACE BOX
+// ═══════════════════════════════════════════
 const camFeed    = document.getElementById('cam-feed');
 const faceCanvas = document.getElementById('face-canvas');
 const faceCtx    = faceCanvas.getContext('2d');
-
 let frameCount = 0, lastFpsTime = performance.now();
 const fpsEl = document.getElementById('fps-counter');
 
 socket.on('frame', ({ img, box }) => {
   camFeed.src = 'data:image/jpeg;base64,' + img;
-
-  // FPS
   frameCount++;
   const now = performance.now();
   if (now - lastFpsTime >= 1000) {
     fpsEl.textContent = frameCount + ' FPS';
     frameCount = 0; lastFpsTime = now;
   }
-
-  // Face bounding box
   faceCanvas.width  = camFeed.offsetWidth;
   faceCanvas.height = camFeed.offsetHeight;
   faceCtx.clearRect(0, 0, faceCanvas.width, faceCanvas.height);
-
   if (box) {
-    const scaleX = faceCanvas.width  / (camFeed.naturalWidth  || 640);
-    const scaleY = faceCanvas.height / (camFeed.naturalHeight || 480);
-    const x1 = box.x1 * scaleX, y1 = box.y1 * scaleY;
-    const x2 = box.x2 * scaleX, y2 = box.y2 * scaleY;
-    const w = x2 - x1, h = y2 - y1;
-    const cs = 16; // corner size
-
+    const sx = faceCanvas.width  / (camFeed.naturalWidth  || 640);
+    const sy = faceCanvas.height / (camFeed.naturalHeight || 480);
+    const x1 = box.x1*sx, y1 = box.y1*sy;
+    const x2 = box.x2*sx, y2 = box.y2*sy;
+    const cs = 18;
     faceCtx.strokeStyle = '#00f5a0';
-    faceCtx.lineWidth   = 2;
+    faceCtx.lineWidth = 2;
     faceCtx.shadowColor = '#00f5a0';
     faceCtx.shadowBlur  = 8;
-
-    // Draw corner brackets instead of full rect
     [
       [[x1,y1+cs],[x1,y1],[x1+cs,y1]],
       [[x2-cs,y1],[x2,y1],[x2,y1+cs]],
@@ -394,48 +375,69 @@ socket.on('frame', ({ img, box }) => {
   }
 });
 
-// ── HR Display ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════
+//  HR DISPLAY
+// ═══════════════════════════════════════════
 const hrValueEl  = document.getElementById('hr-value');
 const hrStatusEl = document.getElementById('hr-status');
 const hrRing     = document.getElementById('hr-ring');
 const heartIcon  = document.getElementById('heart-icon');
 
 function hrZone(hr) {
-  if (hr < 50)  return { label: 'BRADYCARDIA', cls: 'low' };
-  if (hr < 60)  return { label: 'LOW NORMAL',  cls: 'low' };
+  if (hr < 50)  return { label: 'BRADYCARDIA',  cls: 'low' };
+  if (hr < 60)  return { label: 'LOW NORMAL',   cls: 'low' };
   if (hr < 100) return { label: 'NORMAL SINUS', cls: 'normal' };
   if (hr < 120) return { label: 'ELEVATED',     cls: 'high' };
   return               { label: 'TACHYCARDIA',  cls: 'high' };
 }
 
-let hrHistory = [];
+// ═══════════════════════════════════════════
+//  BVP → PERFUSION STATE
+//  rPPG literature: cheeks > forehead > nose > chin
+// ═══════════════════════════════════════════
+let perfusion = {
+  forehead:    0.25,
+  left_cheek:  0.18,
+  right_cheek: 0.18,
+  nose:        0.20,
+  chin:        0.10,
+};
+let currentHR  = null;
+let bvpPulse   = 0;   // animates with heartbeat
 
-socket.on('vitals', ({ hr, bvp, timestamps }) => {
-  // ── HR ──
+socket.on('vitals', ({ hr, bvp }) => {
   if (hr) {
+    currentHR = hr;
     hrValueEl.textContent = hr.toFixed(1);
     const zone = hrZone(hr);
     hrStatusEl.textContent = zone.label;
-    hrStatusEl.className = 'hr-status ' + zone.cls;
+    hrStatusEl.className   = 'hr-status ' + zone.cls;
     hrRing.classList.add('beating');
     heartIcon.classList.add('beating');
-    // Sync animation speed to BPM
     const beatDur = (60 / hr).toFixed(2) + 's';
-    hrRing.style.setProperty('--beat-dur', beatDur);
-    document.querySelector('.hr-ring::before');
     heartIcon.style.animationDuration = beatDur;
     hrRing.style.animationDuration    = beatDur;
-
-    hrHistory.push({ t: new Date().toLocaleTimeString(), v: hr });
-    if (hrHistory.length > 60) hrHistory.shift();
-    updateHrChart();
   }
 
-  // ── BVP Oscilloscope ──
+  if (bvp && bvp.length > 10) {
+    const recent = bvp.slice(-60);
+    const minV   = Math.min(...recent);
+    const maxV   = Math.max(...recent);
+    const amp    = Math.max(0, Math.min(1, maxV - minV));
+    // Cheeks carry strongest blood-volume pulse signal
+    perfusion.forehead    = 0.28 + amp * 0.42;
+    perfusion.left_cheek  = 0.52 + amp * 0.48;
+    perfusion.right_cheek = 0.52 + amp * 0.48;
+    perfusion.nose        = 0.33 + amp * 0.28;
+    perfusion.chin        = 0.12 + amp * 0.18;
+  }
+
   if (bvp && bvp.length > 2) drawOscilloscope(bvp);
 });
 
-// ── BVP Oscilloscope ────────────────────────────────────────────
+// ═══════════════════════════════════════════
+//  BVP OSCILLOSCOPE
+// ═══════════════════════════════════════════
 const bvpCanvas = document.getElementById('bvp-canvas');
 const bvpCtx    = bvpCanvas.getContext('2d');
 let bvpBuffer   = new Array(300).fill(0);
@@ -443,97 +445,197 @@ let bvpBuffer   = new Array(300).fill(0);
 function drawOscilloscope(newData) {
   bvpBuffer.push(...newData);
   bvpBuffer = bvpBuffer.slice(-300);
-
   const W = bvpCanvas.offsetWidth;
   const H = bvpCanvas.offsetHeight;
-  bvpCanvas.width  = W;
-  bvpCanvas.height = H;
-
-  const min = Math.min(...bvpBuffer);
-  const max = Math.max(...bvpBuffer);
-  const range = max - min || 1;
-
+  bvpCanvas.width = W; bvpCanvas.height = H;
+  const mn = Math.min(...bvpBuffer);
+  const mx = Math.max(...bvpBuffer);
+  const range = mx - mn || 1;
   bvpCtx.clearRect(0, 0, W, H);
-
-  // Glow trail
-  const gradient = bvpCtx.createLinearGradient(0, 0, W, 0);
-  gradient.addColorStop(0,   'rgba(0,245,160,0)');
-  gradient.addColorStop(0.6, 'rgba(0,245,160,0.4)');
-  gradient.addColorStop(1,   'rgba(0,245,160,1)');
-
-  bvpCtx.lineWidth   = 2;
-  bvpCtx.strokeStyle = gradient;
-  bvpCtx.shadowColor = '#00f5a0';
-  bvpCtx.shadowBlur  = 12;
-  bvpCtx.lineJoin    = 'round';
-
+  const g = bvpCtx.createLinearGradient(0,0,W,0);
+  g.addColorStop(0,   'rgba(0,245,160,0)');
+  g.addColorStop(0.6, 'rgba(0,245,160,0.4)');
+  g.addColorStop(1,   'rgba(0,245,160,1)');
+  bvpCtx.lineWidth = 2; bvpCtx.strokeStyle = g;
+  bvpCtx.shadowColor = '#00f5a0'; bvpCtx.shadowBlur = 12;
+  bvpCtx.lineJoin = 'round';
   bvpCtx.beginPath();
   bvpBuffer.forEach((v, i) => {
     const x = (i / (bvpBuffer.length - 1)) * W;
-    const y = H - ((v - min) / range) * H * 0.85 - H * 0.075;
+    const y = H - ((v - mn) / range) * H * 0.85 - H * 0.075;
     i === 0 ? bvpCtx.moveTo(x, y) : bvpCtx.lineTo(x, y);
   });
   bvpCtx.stroke();
-
-  // Scan-head dot at right edge
-  const lastV = bvpBuffer[bvpBuffer.length - 1];
-  const dotY  = H - ((lastV - min) / range) * H * 0.85 - H * 0.075;
+  const lastY = H - ((bvpBuffer.at(-1) - mn) / range) * H * 0.85 - H * 0.075;
   bvpCtx.beginPath();
-  bvpCtx.arc(W - 2, dotY, 4, 0, Math.PI * 2);
-  bvpCtx.fillStyle = '#00f5a0';
-  bvpCtx.shadowBlur = 20;
-  bvpCtx.fill();
+  bvpCtx.arc(W-2, lastY, 4, 0, Math.PI*2);
+  bvpCtx.fillStyle = '#00f5a0'; bvpCtx.shadowBlur = 20; bvpCtx.fill();
 }
 
-// ── HR History Chart ────────────────────────────────────────────
-const hrChartCtx = document.getElementById('hr-chart').getContext('2d');
-const hrChart = new Chart(hrChartCtx, {
-  type: 'line',
-  data: {
-    labels: [],
-    datasets: [{
-      data: [],
-      borderColor: '#00f5a0',
-      borderWidth: 2,
-      backgroundColor: 'rgba(0,245,160,0.07)',
-      pointRadius: 2,
-      pointBackgroundColor: '#00f5a0',
-      tension: 0.4,
-      fill: true,
-    }]
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 400 },
-    plugins: { legend: { display: false } },
-    scales: {
-      x: {
-        ticks: {
-          color: '#8da3c0',
-          font: { family: 'Share Tech Mono', size: 8 },
-          maxTicksLimit: 5,
-          maxRotation: 0,
-        },
-        grid: { color: '#0f1e38' },
-      },
-      y: {
-        ticks: {
-          color: '#8da3c0',
-          font: { family: 'Share Tech Mono', size: 8 },
-        },
-        grid: { color: '#0f1e38' },
-        min: 40, max: 140,
-      }
-    }
+// ═══════════════════════════════════════════
+//  FACIAL PERFUSION MAP
+// ═══════════════════════════════════════════
+
+// Jet colormap  0=blue → 0.5=green → 1=red
+function jet(t) {
+  t = Math.max(0, Math.min(1, t));
+  const r = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 3)));
+  const g = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 2)));
+  const b = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 1)));
+  return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+}
+
+// Classify normalised face coord (nx,ny ∈ [0,1]) → perfusion intensity
+function regionIntensity(nx, ny) {
+  if (ny < 0.28)                        return perfusion.forehead;
+  if (ny < 0.58 && nx > 0.32 && nx < 0.68) return perfusion.nose;
+  if (ny < 0.72 && nx <= 0.46)         return perfusion.left_cheek;
+  if (ny < 0.72 && nx >= 0.54)         return perfusion.right_cheek;
+  return perfusion.chin;
+}
+
+const meshCanvas = document.getElementById('mesh-canvas');
+const meshCtx    = meshCanvas.getContext('2d');
+const meshStatus = document.getElementById('mesh-status');
+let   landmarkBuf = null;
+let   meshReady   = false;
+
+// Animate the heat map at 30fps (pulse brightness synced to HR)
+function animatePerfusion() {
+  if (currentHR) {
+    bvpPulse = (Math.sin(Date.now() / 1000 * currentHR / 60 * Math.PI * 2) + 1) / 2 * 0.10;
   }
-});
-
-function updateHrChart() {
-  hrChart.data.labels   = hrHistory.map(d => d.t);
-  hrChart.data.datasets[0].data = hrHistory.map(d => d.v);
-  hrChart.update('none');
+  if (landmarkBuf) drawPerfusion(landmarkBuf);
+  requestAnimationFrame(animatePerfusion);
 }
+animatePerfusion();
+
+function drawPerfusion(landmarks) {
+  const W = meshCanvas.offsetWidth;
+  const H = meshCanvas.offsetHeight;
+  meshCanvas.width = W; meshCanvas.height = H;
+
+  // Face bounding box
+  let minX = 1, maxX = 0, minY = 1, maxY = 0;
+  landmarks.forEach(lm => {
+    minX = Math.min(minX, lm.x); maxX = Math.max(maxX, lm.x);
+    minY = Math.min(minY, lm.y); maxY = Math.max(maxY, lm.y);
+  });
+  const fW = maxX - minX || 1;
+  const fH = maxY - minY || 1;
+
+  // Drawing area with padding
+  const pad = 0.08;
+  const dW = W * (1 - pad*2);
+  const dH = H * (1 - pad*2);
+  const oX = W * pad;
+  const oY = H * pad;
+
+  const toX = lm => ((lm.x - minX) / fW) * dW + oX;
+  const toY = lm => ((lm.y - minY) / fH) * dH + oY;
+
+  // ── 1. Smooth heat-map blobs ──────────────────────
+  const blobR = Math.max(W, H) * 0.055;
+  landmarks.forEach(lm => {
+    const px = toX(lm), py = toY(lm);
+    const nx = (lm.x - minX) / fW;
+    const ny = (lm.y - minY) / fH;
+    const intensity = Math.min(1, regionIntensity(nx, ny) + bvpPulse);
+    const [r, g, b] = jet(intensity);
+
+    const grad = meshCtx.createRadialGradient(px, py, 0, px, py, blobR);
+    grad.addColorStop(0,   `rgba(${r},${g},${b},0.55)`);
+    grad.addColorStop(0.5, `rgba(${r},${g},${b},0.18)`);
+    grad.addColorStop(1,   `rgba(${r},${g},${b},0)`);
+    meshCtx.beginPath();
+    meshCtx.arc(px, py, blobR, 0, Math.PI*2);
+    meshCtx.fillStyle = grad;
+    meshCtx.fill();
+  });
+
+  // ── 2. Wireframe tessellation overlay ─────────────
+  if (window.FACEMESH_TESSELATION && FACEMESH_TESSELATION.length) {
+    meshCtx.save();
+    meshCtx.globalAlpha = 0.18;
+    meshCtx.strokeStyle = '#cde0f5';
+    meshCtx.lineWidth   = 0.4;
+    meshCtx.beginPath();
+    FACEMESH_TESSELATION.forEach(([i, j]) => {
+      const a = landmarks[i], b = landmarks[j];
+      if (!a || !b) return;
+      meshCtx.moveTo(toX(a), toY(a));
+      meshCtx.lineTo(toX(b), toY(b));
+    });
+    meshCtx.stroke();
+    meshCtx.restore();
+  }
+
+  // ── 3. Landmark dots ──────────────────────────────
+  meshCtx.save();
+  meshCtx.globalAlpha = 0.3;
+  landmarks.forEach(lm => {
+    const px = toX(lm), py = toY(lm);
+    const nx = (lm.x-minX)/fW, ny = (lm.y-minY)/fH;
+    const [r,g,b] = jet(Math.min(1, regionIntensity(nx,ny)+bvpPulse));
+    meshCtx.beginPath();
+    meshCtx.arc(px, py, 1.3, 0, Math.PI*2);
+    meshCtx.fillStyle = `rgb(${r},${g},${b})`;
+    meshCtx.fill();
+  });
+  meshCtx.restore();
+}
+
+// ── MediaPipe FaceMesh initialisation ────────
+function initFaceMesh() {
+  if (typeof FaceMesh === 'undefined') {
+    meshStatus.textContent = 'MEDIAPIPE NOT LOADED';
+    return;
+  }
+
+  const faceMesh = new FaceMesh({
+    locateFile: f =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${f}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+
+  faceMesh.onResults(results => {
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+      landmarkBuf = results.multiFaceLandmarks[0];
+      if (!meshReady) {
+        meshReady = true;
+        meshStatus.style.display = 'none';
+      }
+    } else {
+      landmarkBuf = null;
+      meshStatus.style.display  = 'block';
+      meshStatus.textContent    = 'NO FACE DETECTED';
+      meshCanvas.width  = meshCanvas.offsetWidth;
+      meshCanvas.height = meshCanvas.offsetHeight;
+      meshCtx.clearRect(0, 0, meshCanvas.width, meshCanvas.height);
+    }
+  });
+
+  const mpVideo = document.getElementById('mp-video');
+  const cam = new Camera(mpVideo, {
+    onFrame: async () => { await faceMesh.send({ image: mpVideo }); },
+    width: 640, height: 480,
+  });
+
+  cam.start()
+    .then(() => { meshStatus.textContent = 'DETECTING FACE...'; })
+    .catch(err => {
+      meshStatus.textContent = 'CAM ERROR';
+      console.error(err);
+    });
+}
+
+window.addEventListener('load', () => { setTimeout(initFaceMesh, 800); });
 </script>
 </body>
 </html>
