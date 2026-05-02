@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>rPPG · Cardiac Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432234/camera_utils.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg:       #04060d;
+      --panel:    #080c18;
+      --border:   #0f1e38;
+      --green:    #00f5a0;
+      --green-dim:#00a86b;
+      --blue:     #0af;
+      --red:      #ff3b6b;
+      --text:     #8da3c0;
+      --glow:     0 0 18px #00f5a080, 0 0 40px #00f5a030;
+      --glow-red: 0 0 18px #ff3b6b80, 0 0 40px #ff3b6b30;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Rajdhani', sans-serif;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 56px 1fr;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(90deg, #050810 0%, #08111f 100%);
+    }
+    .logo {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.4rem;
+      letter-spacing: 4px;
+      color: var(--green);
+      text-shadow: var(--glow);
+    }
+    .logo span { color: var(--text); text-shadow: none; }
+    .header-meta {
+      display: flex; gap: 32px; align-items: center;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.75rem;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); box-shadow: var(--glow);
+      animation: pulse-dot 2s ease-in-out infinite;
+      display: inline-block; margin-right: 6px;
+    }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    #clock { color: var(--blue); }
+
+    /* ── Main Grid ──
+       Left  (3fr): full-height perfusion mesh
+       Right (2fr): HR on top, BVP on bottom          */
+    main {
+      display: grid;
+      grid-template-columns: 3fr 2fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      overflow: hidden;
+    }
+
+    /* ── Panel base ── */
+    .panel {
+      background: var(--panel);
+      position: relative;
+      overflow: hidden;
+    }
+    .panel-label {
+      position: absolute;
+      top: 12px; left: 16px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 3px;
+      color: var(--green-dim);
+      z-index: 4;
+      pointer-events: none;
+    }
+
+    /* ── MAIN MESH PANEL (left, full height) ── */
+    #mesh-panel {
+      grid-row: 1 / 3;
+      background: #020408;
+    }
+
+    /* subtle dark radial vignette so edges feel depth-y */
+    #mesh-panel::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at center,
+        transparent 50%, rgba(2,4,8,0.7) 100%);
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    #mesh-canvas {
+      width: 100%; height: 100%;
+      display: block;
+    }
+
+    /* "NO FACE" overlay */
+    #mesh-status {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.8rem; letter-spacing: 3px;
+      color: var(--green-dim); text-align: center;
+      pointer-events: none; z-index: 3;
+    }
+
+    /* Color-bar legend */
+    #colorbar {
+      position: absolute;
+      bottom: 18px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.62rem; color: var(--text);
+      z-index: 4;
+    }
+    #colorbar-gradient {
+      width: 110px; height: 6px; border-radius: 3px;
+      background: linear-gradient(90deg,
+        #00008b,#0000ff,#00ffff,#00ff00,#ffff00,#ff8000,#ff0000);
+      box-shadow: 0 0 6px rgba(0,0,0,0.5);
+    }
+
+    /* ── HR PANEL ── */
+    #hr-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 20px;
+    }
+    .hr-ring-wrap { position: relative; width: 220px; height: 220px; }
+    .hr-ring {
+      width: 220px; height: 220px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .hr-ring::before {
+      content: '';
+      position: absolute; inset: -6px;
+      border-radius: 50%;
+      border: 1px solid var(--green);
+      box-shadow: var(--glow);
+      animation: ring-pulse 1s ease-in-out infinite;
+      animation-play-state: paused;
+    }
+    .hr-ring.beating::before { animation-play-state: running; }
+    @keyframes ring-pulse {
+      0%   { transform: scale(1);    opacity: 0.8; }
+      50%  { transform: scale(1.06); opacity: 0.3; }
+      100% { transform: scale(1);    opacity: 0.8; }
+    }
+    .hr-number {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 6rem;
+      color: var(--green);
+      text-shadow: var(--glow);
+      line-height: 1; letter-spacing: 2px;
+    }
+    .hr-unit {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.72rem; color: var(--green-dim);
+      letter-spacing: 3px; text-align: center;
+    }
+    .hr-status {
+      font-size: 0.9rem; font-weight: 700;
+      letter-spacing: 2px; color: var(--text);
+    }
+    .hr-status.normal { color: var(--green); }
+    .hr-status.low    { color: var(--blue); }
+    .hr-status.high   { color: var(--red); text-shadow: var(--glow-red); }
+
+    .heart-icon {
+      position: absolute; bottom: 12px; right: 12px;
+      font-size: 1.3rem;
+      animation: heartbeat 1s ease-in-out infinite;
+      animation-play-state: paused;
+      filter: drop-shadow(0 0 6px var(--red));
+    }
+    .heart-icon.beating { animation-play-state: running; }
+    @keyframes heartbeat {
+      0%{transform:scale(1)} 14%{transform:scale(1.25)}
+      28%{transform:scale(1)} 42%{transform:scale(1.12)}
+      70%{transform:scale(1)} 100%{transform:scale(1)}
+    }
+
+    /* ── BVP PANEL ── */
+    #bvp-panel { padding-top: 36px; }
+    #bvp-canvas { width: 100%; height: calc(100% - 36px); display: block; }
+    .grid-overlay {
+      position: absolute; inset: 36px 0 0 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 30px;
+      pointer-events: none; opacity: 0.5;
+    }
+
+    /* ── Corner brackets ── */
+    .corner {
+      position: absolute; width: 14px; height: 14px;
+      border-color: var(--green); border-style: solid; opacity: 0.4;
+    }
+    .corner.tl { top: 8px;    left: 8px;  border-width: 1px 0 0 1px; }
+    .corner.tr { top: 8px;    right: 8px; border-width: 1px 1px 0 0; }
+    .corner.bl { bottom: 8px; left: 8px;  border-width: 0 0 1px 1px; }
+    .corner.br { bottom: 8px; right: 8px; border-width: 0 1px 1px 0; }
+  </style>
+</head>
+<body>
+
+<!-- Hidden: webcam input for MediaPipe (never displayed) -->
+<video id="mp-video" playsinline style="display:none"></video>
+
+<header>
+  <div class="logo">rPPG <span>· CARDIAC MONITOR</span></div>
+  <div class="header-meta">
+    <span><span class="status-dot"></span><span id="status-text">CONNECTING</span></span>
+    <span id="clock">00:00:00</span>
+    <span id="fps-counter">-- FPS</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ① FACIAL PERFUSION MAP — main left panel -->
+  <div class="panel" id="mesh-panel">
+    <div class="panel-label">FACIAL PERFUSION MAP · rPPG SIGNAL</div>
+    <canvas id="mesh-canvas"></canvas>
+    <div id="mesh-status">INITIALIZING FACE MESH...</div>
+    <div id="colorbar">
+      <span>LOW</span>
+      <div id="colorbar-gradient"></div>
+      <span>HIGH</span>
+    </div>
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+  </div>
+
+  <!-- ② HEART RATE -->
+  <div class="panel" id="hr-panel">
+    <div class="panel-label">HEART RATE</div>
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="hr-ring-wrap">
+      <div class="hr-ring" id="hr-ring">
+        <div>
+          <div class="hr-number" id="hr-value">--</div>
+          <div class="hr-unit">BPM</div>
+        </div>
+      </div>
+      <div class="heart-icon" id="heart-icon">♥</div>
+    </div>
+    <div class="hr-status" id="hr-status">ACQUIRING SIGNAL</div>
+  </div>
+
+  <!-- ③ BVP OSCILLOSCOPE -->
+  <div class="panel" id="bvp-panel">
+    <div class="panel-label">BVP · BLOOD VOLUME PULSE</div>
+    <div class="grid-overlay"></div>
+    <canvas id="bvp-canvas"></canvas>
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+  </div>
+
+</main>
+
+<script>
+// ═══════════════════════════════════════════
+//  CLOCK
+// ═══════════════════════════════════════════
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toTimeString().slice(0, 8);
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ═══════════════════════════════════════════
+//  SOCKET  (still needed for BVP/HR from Python)
+// ═══════════════════════════════════════════
+const socket   = io();
+const statusEl = document.getElementById('status-text');
+socket.on('connect',    () => { statusEl.textContent = 'LIVE'; });
+socket.on('disconnect', () => { statusEl.textContent = 'OFFLINE'; });
+
+// Ignore incoming video frames — mesh is drawn from MediaPipe
+socket.on('frame', () => {});
+
+// ═══════════════════════════════════════════
+//  HR DISPLAY
+// ═══════════════════════════════════════════
+const hrValueEl  = document.getElementById('hr-value');
+const hrStatusEl = document.getElementById('hr-status');
+const hrRing     = document.getElementById('hr-ring');
+const heartIcon  = document.getElementById('heart-icon');
+const fpsEl      = document.getElementById('fps-counter');
+
+function hrZone(hr) {
+  if (hr < 50)  return { label: 'BRADYCARDIA',  cls: 'low'    };
+  if (hr < 60)  return { label: 'LOW NORMAL',   cls: 'low'    };
+  if (hr < 100) return { label: 'NORMAL SINUS', cls: 'normal' };
+  if (hr < 120) return { label: 'ELEVATED',     cls: 'high'   };
+  return               { label: 'TACHYCARDIA',  cls: 'high'   };
+}
+
+// ═══════════════════════════════════════════
+//  PERFUSION STATE
+//  rPPG literature weights:
+//    cheeks > forehead > nose > chin
+// ═══════════════════════════════════════════
+let perfusion = {
+  forehead:    0.25,
+  left_cheek:  0.18,
+  right_cheek: 0.18,
+  nose:        0.20,
+  chin:        0.10,
+};
+let currentHR = null;
+let bvpPulse  = 0;    // oscillates with heartbeat
+
+socket.on('vitals', ({ hr, bvp }) => {
+  // ── HR ──────────────────────────────────
+  if (hr) {
+    currentHR = hr;
+    hrValueEl.textContent  = hr.toFixed(1);
+    const zone = hrZone(hr);
+    hrStatusEl.textContent = zone.label;
+    hrStatusEl.className   = 'hr-status ' + zone.cls;
+    hrRing.classList.add('beating');
+    heartIcon.classList.add('beating');
+    const dur = (60 / hr).toFixed(2) + 's';
+    heartIcon.style.animationDuration = dur;
+    hrRing.style.animationDuration    = dur;
+  }
+
+  // ── BVP → per-region amplitude ──────────
+  if (bvp && bvp.length > 10) {
+    const recent = bvp.slice(-60);
+    const amp = Math.max(0, Math.min(1,
+      Math.max(...recent) - Math.min(...recent)));
+    perfusion.forehead    = 0.28 + amp * 0.42;
+    perfusion.left_cheek  = 0.52 + amp * 0.48;
+    perfusion.right_cheek = 0.52 + amp * 0.48;
+    perfusion.nose        = 0.33 + amp * 0.28;
+    perfusion.chin        = 0.12 + amp * 0.18;
+  }
+
+  // ── BVP waveform ────────────────────────
+  if (bvp && bvp.length > 2) drawOscilloscope(bvp);
+});
+
+// ═══════════════════════════════════════════
+//  BVP OSCILLOSCOPE
+// ═══════════════════════════════════════════
+const bvpCanvas = document.getElementById('bvp-canvas');
+const bvpCtx    = bvpCanvas.getContext('2d');
+let bvpBuffer   = new Array(300).fill(0);
+
+function drawOscilloscope(newData) {
+  bvpBuffer.push(...newData);
+  bvpBuffer = bvpBuffer.slice(-300);
+  const W = bvpCanvas.offsetWidth;
+  const H = bvpCanvas.offsetHeight;
+  bvpCanvas.width = W; bvpCanvas.height = H;
+  const mn  = Math.min(...bvpBuffer);
+  const mx  = Math.max(...bvpBuffer);
+  const rng = mx - mn || 1;
+  bvpCtx.clearRect(0, 0, W, H);
+  const g = bvpCtx.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0,   'rgba(0,245,160,0)');
+  g.addColorStop(0.6, 'rgba(0,245,160,0.4)');
+  g.addColorStop(1,   'rgba(0,245,160,1)');
+  bvpCtx.lineWidth = 2.5; bvpCtx.strokeStyle = g;
+  bvpCtx.shadowColor = '#00f5a0'; bvpCtx.shadowBlur = 14;
+  bvpCtx.lineJoin = 'round';
+  bvpCtx.beginPath();
+  bvpBuffer.forEach((v, i) => {
+    const x = (i / (bvpBuffer.length - 1)) * W;
+    const y = H - ((v - mn) / rng) * H * 0.85 - H * 0.075;
+    i === 0 ? bvpCtx.moveTo(x, y) : bvpCtx.lineTo(x, y);
+  });
+  bvpCtx.stroke();
+  const lastY = H - ((bvpBuffer.at(-1) - mn) / rng) * H * 0.85 - H * 0.075;
+  bvpCtx.beginPath();
+  bvpCtx.arc(W - 3, lastY, 5, 0, Math.PI * 2);
+  bvpCtx.fillStyle  = '#00f5a0';
+  bvpCtx.shadowBlur = 22;
+  bvpCtx.fill();
+}
+
+// ═══════════════════════════════════════════
+//  FACIAL PERFUSION MAP
+// ═══════════════════════════════════════════
+
+// Jet colormap   0=blue → 0.5=green → 1=red
+function jet(t) {
+  t = Math.max(0, Math.min(1, t));
+  const r = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 3)));
+  const g = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 2)));
+  const b = Math.min(1, Math.max(0, 1.5 - Math.abs(4*t - 1)));
+  return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+}
+
+// Map normalised face coordinate → perfusion intensity
+function regionIntensity(nx, ny) {
+  if (ny < 0.28)                              return perfusion.forehead;
+  if (ny < 0.58 && nx > 0.30 && nx < 0.70)  return perfusion.nose;
+  if (ny < 0.74 && nx <= 0.46)               return perfusion.left_cheek;
+  if (ny < 0.74 && nx >= 0.54)               return perfusion.right_cheek;
+  return perfusion.chin;
+}
+
+const meshCanvas = document.getElementById('mesh-canvas');
+const meshCtx    = meshCanvas.getContext('2d');
+const meshStatus = document.getElementById('mesh-status');
+let   landmarks  = null;
+let   meshReady  = false;
+let   meshFPS    = 0, meshFPSTime = performance.now(), meshFPSCount = 0;
+
+// Animate at 30fps — pulse brightness tracks heartbeat
+function animateMesh() {
+  if (currentHR) {
+    bvpPulse = (Math.sin(Date.now() / 1000 * currentHR / 60 * Math.PI * 2) + 1) / 2 * 0.11;
+  }
+  if (landmarks) drawPerfusion(landmarks);
+  requestAnimationFrame(animateMesh);
+}
+animateMesh();
+
+function drawPerfusion(lms) {
+  const W = meshCanvas.offsetWidth;
+  const H = meshCanvas.offsetHeight;
+  meshCanvas.width = W; meshCanvas.height = H;
+
+  // FPS counter for mesh
+  meshFPSCount++;
+  const now = performance.now();
+  if (now - meshFPSTime >= 1000) {
+    fpsEl.textContent = meshFPSCount + ' FPS';
+    meshFPSCount = 0; meshFPSTime = now;
+  }
+
+  // Face bounding box
+  let minX = 1, maxX = 0, minY = 1, maxY = 0;
+  lms.forEach(lm => {
+    minX = Math.min(minX, lm.x); maxX = Math.max(maxX, lm.x);
+    minY = Math.min(minY, lm.y); maxY = Math.max(maxY, lm.y);
+  });
+  const fW = maxX - minX || 1;
+  const fH = maxY - minY || 1;
+
+  // Keep face centred with padding and correct aspect ratio
+  const faceAR = fW / fH;
+  const canvasAR = W / H;
+  let dW, dH, oX, oY;
+  if (faceAR < canvasAR) {
+    dH = H * 0.86;
+    dW = dH * faceAR;
+  } else {
+    dW = W * 0.86;
+    dH = dW / faceAR;
+  }
+  oX = (W - dW) / 2;
+  oY = (H - dH) / 2;
+
+  const toX = lm => ((lm.x - minX) / fW) * dW + oX;
+  const toY = lm => ((lm.y - minY) / fH) * dH + oY;
+
+  // ── 1. Heat-map blobs (Gaussian splat per landmark) ──
+  const blobR = Math.min(dW, dH) * 0.065;
+  lms.forEach(lm => {
+    const px = toX(lm), py = toY(lm);
+    const nx = (lm.x - minX) / fW;
+    const ny = (lm.y - minY) / fH;
+    const intensity = Math.min(1, regionIntensity(nx, ny) + bvpPulse);
+    const [r, g, b] = jet(intensity);
+
+    const grad = meshCtx.createRadialGradient(px, py, 0, px, py, blobR);
+    grad.addColorStop(0,    `rgba(${r},${g},${b},0.60)`);
+    grad.addColorStop(0.45, `rgba(${r},${g},${b},0.22)`);
+    grad.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+    meshCtx.beginPath();
+    meshCtx.arc(px, py, blobR, 0, Math.PI * 2);
+    meshCtx.fillStyle = grad;
+    meshCtx.fill();
+  });
+
+  // ── 2. Wireframe tessellation ──
+  if (window.FACEMESH_TESSELATION && FACEMESH_TESSELATION.length) {
+    meshCtx.save();
+    meshCtx.globalAlpha = 0.22;
+    meshCtx.strokeStyle = '#cde0f5';
+    meshCtx.lineWidth   = 0.5;
+    meshCtx.beginPath();
+    FACEMESH_TESSELATION.forEach(([i, j]) => {
+      const a = lms[i], b = lms[j];
+      if (!a || !b) return;
+      meshCtx.moveTo(toX(a), toY(a));
+      meshCtx.lineTo(toX(b), toY(b));
+    });
+    meshCtx.stroke();
+    meshCtx.restore();
+  }
+
+  // ── 3. Landmark dots ──
+  meshCtx.save();
+  meshCtx.globalAlpha = 0.35;
+  lms.forEach(lm => {
+    const px = toX(lm), py = toY(lm);
+    const nx = (lm.x - minX) / fW;
+    const ny = (lm.y - minY) / fH;
+    const [r, g, b] = jet(Math.min(1, regionIntensity(nx, ny) + bvpPulse));
+    meshCtx.beginPath();
+    meshCtx.arc(px, py, 1.5, 0, Math.PI * 2);
+    meshCtx.fillStyle = `rgb(${r},${g},${b})`;
+    meshCtx.fill();
+  });
+  meshCtx.restore();
+}
+
+// ═══════════════════════════════════════════
+//  MEDIAPIPE FACE MESH INIT
+// ═══════════════════════════════════════════
+function initFaceMesh() {
+  if (typeof FaceMesh === 'undefined') {
+    meshStatus.textContent = 'MEDIAPIPE UNAVAILABLE';
+    return;
+  }
+
+  const faceMesh = new FaceMesh({
+    locateFile: f =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${f}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+
+  faceMesh.onResults(results => {
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+      landmarks = results.multiFaceLandmarks[0];
+      if (!meshReady) {
+        meshReady = true;
+        meshStatus.style.display = 'none';
+      }
+    } else {
+      landmarks = null;
+      meshStatus.style.display = 'block';
+      meshStatus.textContent   = 'NO FACE DETECTED';
+      const W = meshCanvas.offsetWidth;
+      const H = meshCanvas.offsetHeight;
+      meshCanvas.width = W; meshCanvas.height = H;
+      meshCtx.clearRect(0, 0, W, H);
+    }
+  });
+
+  const mpVideo = document.getElementById('mp-video');
+  const cam = new Camera(mpVideo, {
+    onFrame: async () => { await faceMesh.send({ image: mpVideo }); },
+    width: 1280, height: 720,   // higher res → more accurate landmarks
+  });
+
+  cam.start()
+    .then(()  => { meshStatus.textContent = 'DETECTING FACE...'; })
+    .catch(err => {
+      meshStatus.textContent = 'CAMERA ERROR';
+      console.error('MediaPipe camera error:', err);
+    });
+}
+
+window.addEventListener('load', () => { setTimeout(initFaceMesh, 800); });
+</script>
+</body>
+</html>
