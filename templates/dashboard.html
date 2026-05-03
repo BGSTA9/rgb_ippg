@@ -344,7 +344,7 @@ let bvpPulse  = 0;    // oscillates with heartbeat
 
 socket.on('vitals', ({ hr, bvp }) => {
   // ── HR ──────────────────────────────────
-  if (hr) {
+  if (typeof hr === 'number' && isFinite(hr) && hr > 0) {
     currentHR = hr;
     hrValueEl.textContent  = hr.toFixed(1);
     const zone = hrZone(hr);
@@ -563,8 +563,32 @@ function initFaceMesh() {
     minTrackingConfidence: 0.5,
   });
 
+  const mpVideo = document.getElementById('mp-video');
+
+  // Downscaled JPEG capture → Python rPPG model (face_frame / no_face).
+  const captureCanvas = document.createElement('canvas');
+  captureCanvas.width  = 640;
+  captureCanvas.height = 480;
+  const captureCtx = captureCanvas.getContext('2d');
+  let lastFrameSent = 0;
+
+  function sendBackendFrame(hasFace) {
+    const now = performance.now();
+    if (now - lastFrameSent < 33) return;   // ~30 fps cap
+    lastFrameSent = now;
+    const ts = Date.now() / 1000;
+    if (!hasFace) { socket.emit('no_face', { ts }); return; }
+    if (mpVideo.readyState < 2) return;
+    captureCtx.drawImage(mpVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+    captureCanvas.toBlob(blob => {
+      if (!blob) return;
+      blob.arrayBuffer().then(buf => socket.emit('face_frame', { img: buf, ts }));
+    }, 'image/jpeg', 0.85);
+  }
+
   faceMesh.onResults(results => {
-    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    const hasFace = !!(results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0);
+    if (hasFace) {
       landmarks = results.multiFaceLandmarks[0];
       if (!meshReady) {
         meshReady = true;
@@ -579,12 +603,12 @@ function initFaceMesh() {
       meshCanvas.width = W; meshCanvas.height = H;
       meshCtx.clearRect(0, 0, W, H);
     }
+    sendBackendFrame(hasFace);
   });
 
-  const mpVideo = document.getElementById('mp-video');
   const cam = new Camera(mpVideo, {
     onFrame: async () => { await faceMesh.send({ image: mpVideo }); },
-    width: 1280, height: 720,   // higher res → more accurate landmarks
+    width: 1280, height: 720,
   });
 
   cam.start()
