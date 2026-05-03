@@ -11,7 +11,7 @@ app = Flask(__name__, template_folder=".")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 model = rppg.Model()
-state = {"running": False, "vitals_thread": None}
+state = {"running": False, "capture_thread": None}
 lock = threading.Lock()
 
 
@@ -26,7 +26,7 @@ lock = threading.Lock()
 #  Quality is reported as 1 − (buffer-std / 12), clipped to [0, 1].
 # ─────────────────────────────────────────────────────────────
 class HRStabilizer:
-    def __init__(self, buffer_size=8, min_fill=4, max_slew_bpm_per_sec=25.0,
+    def __init__(self, buffer_size=12, min_fill=5, max_slew_bpm_per_sec=15.0,
                  hr_min=30.0, hr_max=220.0):
         self.buf = deque(maxlen=buffer_size)
         self.min_fill = min_fill
@@ -63,7 +63,7 @@ class HRStabilizer:
         arr = np.array(self.buf, dtype=np.float64)
         med = float(np.median(arr))
         mad = float(np.median(np.abs(arr - med)))
-        threshold = max(8.0, 3.5 * mad)  # always allow at least ±8 BPM
+        threshold = max(6.0, 3.0 * mad)  # always allow at least ±6 BPM
         keep = arr[np.abs(arr - med) <= threshold]
         if keep.size == 0:
             keep = arr
@@ -101,39 +101,76 @@ def index():
     return render_template("dashboard.html")
 
 
-def vitals_loop():
-    while state["running"]:
-        time.sleep(1.0)
-        try:
-            # Use a longer analysis window for stable peak detection
-            # (10s gives ~10-17 cycles; 15s gives more dominant-freq stability)
-            result = model.hr(start=-15)
-            hr_raw = None
-            if result and result.get("hr"):
-                hr_raw = float(result["hr"])
+def capture_and_vitals():
+    """
+    Main pipeline thread: uses model.video_capture(0) to let open-rppg
+    handle its own camera capture + face detection + signal extraction.
+    We then periodically query model.hr() and model.bvp() for results.
+    """
+    try:
+        with model.video_capture(0):
+            print("✓ Camera opened by open-rppg pipeline")
+            last_hr_query = 0
 
-            # Stabilize
-            hr_smooth = hr_stab.push(hr_raw)
-            hr_val = round(hr_smooth, 1) if hr_smooth is not None else None
+            for frame, box in model.preview:
+                if not state["running"]:
+                    break
 
-            bvp_vals, timestamps = [], []
-            try:
-                bvp, ts = model.bvp(start=-10)
-                if bvp is not None and len(bvp) >= 2:
-                    bvp_vals = [round(float(v), 4) for v in bvp[-150:]]
-                    timestamps = [round(float(t), 3) for t in ts[-150:]]
-            except Exception:
-                pass
+                now = time.time()
 
-            socketio.emit("vitals", {
-                "hr": hr_val,                                      # smoothed (use this)
-                "hr_raw": round(hr_raw, 1) if hr_raw else None,    # for debugging
-                "quality": round(hr_stab.quality(), 2),            # 0..1 signal quality
-                "bvp": bvp_vals,
-                "timestamps": timestamps,
-            })
-        except Exception as e:
-            print(f"vitals error: {e}")
+                # Query HR every ~1 second to avoid overhead
+                if now - last_hr_query >= 1.0:
+                    last_hr_query = now
+                    try:
+                        # Use the library's SQI for quality assessment
+                        result = model.hr(start=-15)
+                        hr_raw = None
+                        sqi = 0.0
+                        if result:
+                            if result.get("hr"):
+                                hr_raw = float(result["hr"])
+                            if result.get("SQI") is not None:
+                                sqi = float(result["SQI"])
+
+                        # Stabilize the HR
+                        hr_smooth = hr_stab.push(hr_raw)
+                        hr_val = round(hr_smooth, 1) if hr_smooth is not None else None
+
+                        # Combine library SQI with our stabilizer quality
+                        stab_q = hr_stab.quality()
+                        combined_quality = (sqi * 0.6 + stab_q * 0.4) if sqi > 0 else stab_q
+
+                        # Get BVP waveform for visualization
+                        bvp_vals, timestamps = [], []
+                        try:
+                            bvp, ts = model.bvp(start=-10)
+                            if bvp is not None and len(bvp) >= 2:
+                                bvp_vals = [round(float(v), 4) for v in bvp[-150:]]
+                                timestamps = [round(float(t), 3) for t in ts[-150:]]
+                        except Exception:
+                            pass
+
+                        socketio.emit("vitals", {
+                            "hr": hr_val,
+                            "hr_raw": round(hr_raw, 1) if hr_raw else None,
+                            "quality": round(combined_quality, 2),
+                            "sqi": round(sqi, 2),
+                            "bvp": bvp_vals,
+                            "timestamps": timestamps,
+                        })
+                    except Exception as e:
+                        print(f"vitals query error: {e}")
+
+                # Small sleep to not hog CPU, the preview generator
+                # already paces itself but we add a tiny yield
+                time.sleep(0.005)
+
+    except Exception as e:
+        print(f"capture_and_vitals error: {e}")
+    finally:
+        print("capture_and_vitals thread exiting")
+        with lock:
+            state["running"] = False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -143,12 +180,11 @@ def vitals_loop():
 def on_connect():
     with lock:
         if not state["running"]:
-            model.__enter__()
             hr_stab.reset()
             state["running"] = True
-            t = threading.Thread(target=vitals_loop, daemon=True)
+            t = threading.Thread(target=capture_and_vitals, daemon=True)
             t.start()
-            state["vitals_thread"] = t
+            state["capture_thread"] = t
     print("Client connected")
 
 
@@ -159,45 +195,22 @@ def on_disconnect():
             state["running"] = False
             hr_stab.reset()
             try:
-                model.__exit__(None, None, None)
+                model.stop()
             except Exception as e:
-                print(f"model exit error: {e}")
+                print(f"model stop error: {e}")
     print("Client disconnected")
 
 
+# Keep face_frame/no_face handlers as no-ops for backward compatibility
+# (the frontend still sends them but open-rppg handles its own camera now)
 @socketio.on("face_frame")
 def on_face_frame(data):
-    try:
-        img_bytes = data.get("img")
-        ts = data.get("ts")
-        if img_bytes is None:
-            return
-        if isinstance(img_bytes, str):
-            import base64
-            if "," in img_bytes:
-                img_bytes = img_bytes.split(",", 1)[1]
-            img_bytes = base64.b64decode(img_bytes)
-        arr = np.frombuffer(img_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            return
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        if ts is not None:
-            ts = float(ts)
-        model.update_face(img, ts=ts, hasface=True)
-    except Exception as e:
-        print(f"face_frame error: {e}")
+    pass
 
 
 @socketio.on("no_face")
 def on_no_face(data):
-    try:
-        ts = data.get("ts")
-        if ts is not None:
-            ts = float(ts)
-        model.update_face(None, ts=ts, hasface=False)
-    except Exception as e:
-        print(f"no_face error: {e}")
+    pass
 
 
 if __name__ == "__main__":
