@@ -1,8 +1,7 @@
-
 import time
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import cv2
 import rppg
 
@@ -29,7 +28,6 @@ class Config:
     zone_resting_max: float = 60.0
     zone_normal_max: float = 100.0
     zone_elevated_max: float = 140.0
-    # > elevated_max → "High"
 
     # Overlay geometry
     overlay_x: int = 10
@@ -40,6 +38,14 @@ class Config:
     # Font
     font: int = cv2.FONT_HERSHEY_SIMPLEX
 
+    # Color Constants (Cached to prevent tuple re-allocation every frame)
+    COLOR_RESTING: tuple[int, int, int] = (180, 180, 180)   # gray
+    COLOR_NORMAL: tuple[int, int, int] = (80, 200, 80)      # green
+    COLOR_ELEVATED: tuple[int, int, int] = (0, 165, 255)    # orange
+    COLOR_HIGH: tuple[int, int, int] = (60, 60, 220)        # red
+    COLOR_BG: tuple[int, int, int] = (20, 20, 20)           # dark grey
+    COLOR_TEXT_DIM: tuple[int, int, int] = (130, 130, 130)  # dim text
+
 
 CFG = Config()
 
@@ -48,12 +54,12 @@ CFG = Config()
 def hr_zone(bpm: float) -> tuple[str, tuple[int, int, int]]:
     """Return (label, BGR color) for a given BPM reading."""
     if bpm < CFG.zone_resting_max:
-        return "Resting",  (180, 180, 180)   # gray
+        return "Resting", CFG.COLOR_RESTING
     if bpm < CFG.zone_normal_max:
-        return "Normal",   (80, 200, 80)      # green
+        return "Normal", CFG.COLOR_NORMAL
     if bpm < CFG.zone_elevated_max:
-        return "Elevated", (0, 165, 255)      # orange
-    return     "High",     (60, 60, 220)      # red
+        return "Elevated", CFG.COLOR_ELEVATED
+    return "High", CFG.COLOR_HIGH
 
 
 # ─── Overlay Renderer ─────────────────────────────────────────────────────────
@@ -72,25 +78,32 @@ def draw_overlay(
     if box is not None and face_detected:
         y1, y2 = box[0]
         x1, x2 = box[1]
-        color = hr_zone(hr_smooth)[1] if hr_smooth else (80, 200, 80)
+        color = hr_zone(hr_smooth)[1] if hr_smooth else CFG.COLOR_NORMAL
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
         if hr_smooth is not None:
             label = f"{hr_smooth:.1f} BPM"
             (lw, lh), _ = cv2.getTextSize(label, CFG.font, 0.65, 2)
             # Background pill
-            cv2.rectangle(frame, (x1 - 1, y1 - lh - 14), (x1 + lw + 6, y1 - 2), (20, 20, 20), -1)
+            cv2.rectangle(frame, (x1 - 1, y1 - lh - 14), (x1 + lw + 6, y1 - 2), CFG.COLOR_BG, -1)
             cv2.putText(frame, label, (x1 + 2, y1 - 6), CFG.font, 0.65, color, 2)
 
-    # ── Top-left info panel ──
+    # ── Top-left info panel (Optimized ROI Blending) ──
     ox, oy = CFG.overlay_x, CFG.overlay_y
     panel_w, panel_h = 220, 130
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (ox - 4, oy - 4), (ox + panel_w, oy + panel_h), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+    
+    # Safely calculate bounds to prevent crashes if window is too small
+    px1, py1 = max(0, ox - 4), max(0, oy - 4)
+    px2, py2 = min(w, ox + panel_w), min(h, oy + panel_h)
+    
+    if px2 > px1 and py2 > py1:
+        roi = frame[py1:py2, px1:px2]
+        overlay_roi = roi.copy()
+        cv2.rectangle(overlay_roi, (0, 0), (px2 - px1, py2 - py1), CFG.COLOR_BG, -1)
+        cv2.addWeighted(overlay_roi, 0.55, roi, 0.45, 0, roi)
 
     # Status dot
-    dot_color = (80, 200, 80) if face_detected else (60, 60, 220)
+    dot_color = CFG.COLOR_NORMAL if face_detected else CFG.COLOR_HIGH
     cv2.circle(frame, (ox + 8, oy + 10), 5, dot_color, -1)
     status_text = "Face detected" if face_detected else "Searching…"
     cv2.putText(frame, status_text, (ox + 20, oy + 15), CFG.font, 0.45, (200, 200, 200), 1)
@@ -100,16 +113,16 @@ def draw_overlay(
         zone_label, zone_color = hr_zone(hr_smooth)
         bpm_str = f"{hr_smooth:.0f}"
         cv2.putText(frame, bpm_str, (ox + 2, oy + 60), CFG.font, 1.8, zone_color, 3)
-        cv2.putText(frame, "BPM", (ox + 90, oy + 60), CFG.font, 0.55, (180, 180, 180), 1)
+        cv2.putText(frame, "BPM", (ox + 90, oy + 60), CFG.font, 0.55, CFG.COLOR_RESTING, 1)
 
         # Zone badge
         cv2.putText(frame, zone_label, (ox + 2, oy + 80), CFG.font, 0.5, zone_color, 1)
 
         # Raw vs smoothed diff hint
         if hr_raw is not None and abs(hr_raw - hr_smooth) > 2:
-            cv2.putText(frame, f"raw {hr_raw:.0f}", (ox + 80, oy + 80), CFG.font, 0.38, (130, 130, 130), 1)
+            cv2.putText(frame, f"raw {hr_raw:.0f}", (ox + 80, oy + 80), CFG.font, 0.38, CFG.COLOR_TEXT_DIM, 1)
     else:
-        cv2.putText(frame, "-- BPM", (ox + 2, oy + 60), CFG.font, 1.2, (130, 130, 130), 2)
+        cv2.putText(frame, "-- BPM", (ox + 2, oy + 60), CFG.font, 1.2, CFG.COLOR_TEXT_DIM, 2)
 
     # Mini history bar chart
     if len(hr_history) > 1:
@@ -118,6 +131,7 @@ def draw_overlay(
         hr_max = max(hr_history)
         hr_range = max(hr_max - hr_min, 10)
         slot_w = CFG.bar_width // max(len(hr_history), 1)
+        
         for i, val in enumerate(hr_history):
             bar_h_px = int(CFG.bar_height * (val - hr_min) / hr_range) + 2
             bx = ox + i * slot_w
@@ -152,7 +166,10 @@ def main() -> None:
                 # ── FPS ───────────────────────────────────────────────────────
                 now = time.perf_counter()
                 fps_times.append(now)
-                fps = len(fps_times) / (fps_times[-1] - fps_times[0] + 1e-9) if len(fps_times) > 1 else 0.0
+                
+                # Optimized FPS calculation logic
+                elapsed_time = fps_times[-1] - fps_times[0]
+                fps = len(fps_times) / elapsed_time if elapsed_time > 0 else 0.0
 
                 # ── HR poll (throttled) ───────────────────────────────────────
                 if now - last_poll_time >= CFG.hr_poll_interval:

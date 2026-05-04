@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iPPG Web Monitor</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        #container {
+            position: relative;
+            background: #000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        video {
+            display: none; /* Hidden, we draw it to the canvas */
+        }
+        canvas {
+            display: block;
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #444; }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+</head>
+<body>
+
+    <div id="container">
+        <video id="videoElement" autoplay playsinline></video>
+        <canvas id="outputCanvas" width="640" height="480"></canvas>
+    </div>
+    
+    <div class="controls">
+        <button id="startBtn">Start Camera</button>
+        <button id="stopBtn">Stop</button>
+    </div>
+
+    <script>
+        // --- Configuration (matching Python) ---
+        const CFG = {
+            hr_poll_interval: 1000, // milliseconds
+            hr_history_window: 10,
+            zone_resting_max: 60.0,
+            zone_normal_max: 100.0,
+            zone_elevated_max: 140.0,
+            overlay_x: 10,
+            overlay_y: 10,
+            bar_width: 160,
+            bar_height: 40
+        };
+
+        // --- State ---
+        let hrHistory = [];
+        let lastPollTime = 0;
+        let hrRaw = null;
+        let hrSmooth = null;
+        let fpsTimes = [];
+        let currentFaceBox = null;
+        let isRunning = false;
+
+        // Elements
+        const video = document.getElementById('videoElement');
+        const canvas = document.getElementById('outputCanvas');
+        const ctx = canvas.getContext('2d');
+        let camera = null;
+        let faceDetection = null;
+
+        // --- HR Zone Helper ---
+        function hrZone(bpm) {
+            if (bpm === null) return ["Searching...", "rgb(130, 130, 130)"];
+            if (bpm < CFG.zone_resting_max) return ["Resting", "rgb(180, 180, 180)"];
+            if (bpm < CFG.zone_normal_max) return ["Normal", "rgb(80, 200, 80)"];
+            if (bpm < CFG.zone_elevated_max) return ["Elevated", "rgb(255, 165, 0)"];
+            return ["High", "rgb(220, 60, 60)"];
+        }
+
+        // --- Mock rPPG Model ---
+        // In a real web app, you would analyze the video frame's RGB data here
+        function estimateHeartRate() {
+            if (!currentFaceBox) return null;
+            // Generate a realistic-looking fake heart rate that slowly drifts
+            const baseHR = hrSmooth || 75;
+            const drift = (Math.random() - 0.5) * 5; 
+            return Math.max(50, Math.min(180, baseHR + drift));
+        }
+
+        // --- Overlay Renderer ---
+        function drawOverlay(fps) {
+            const faceDetected = currentFaceBox !== null;
+            
+            // 1. Draw Bounding Box
+            if (faceDetected) {
+                const [zoneLabel, zoneColor] = hrZone(hrSmooth);
+                const rect = currentFaceBox;
+                
+                // Convert normalized coordinates to pixel coordinates
+                const x = rect.xMin * canvas.width;
+                const y = rect.yMin * canvas.height;
+                const w = rect.width * canvas.width;
+                const h = rect.height * canvas.height;
+
+                ctx.strokeStyle = hrSmooth ? zoneColor : "rgb(80, 200, 80)";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x, y, w, h);
+
+                if (hrSmooth !== null) {
+                    const label = `${hrSmooth.toFixed(1)} BPM`;
+                    ctx.font = "16px Arial";
+                    const textWidth = ctx.measureText(label).width;
+                    
+                    ctx.fillStyle = "rgba(20, 20, 20, 0.9)";
+                    ctx.fillRect(x - 1, y - 24, textWidth + 10, 22);
+                    
+                    ctx.fillStyle = zoneColor;
+                    ctx.fillText(label, x + 4, y - 8);
+                }
+            }
+
+            // 2. Top-Left Info Panel
+            const ox = CFG.overlay_x;
+            const oy = CFG.overlay_y;
+            
+            ctx.fillStyle = "rgba(20, 20, 20, 0.55)";
+            ctx.fillRect(ox - 4, oy - 4, 220, 130);
+
+            // Status Dot
+            ctx.beginPath();
+            ctx.arc(ox + 8, oy + 10, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = faceDetected ? "rgb(80, 200, 80)" : "rgb(220, 60, 60)";
+            ctx.fill();
+            
+            ctx.fillStyle = "rgb(200, 200, 200)";
+            ctx.font = "12px Arial";
+            ctx.fillText(faceDetected ? "Face detected" : "Searching...", ox + 20, oy + 14);
+
+            // Large BPM Readout
+            if (hrSmooth !== null) {
+                const [zoneLabel, zoneColor] = hrZone(hrSmooth);
+                
+                ctx.fillStyle = zoneColor;
+                ctx.font = "bold 48px Arial";
+                ctx.fillText(`${Math.round(hrSmooth)}`, ox + 2, oy + 60);
+                
+                ctx.fillStyle = "rgb(180, 180, 180)";
+                ctx.font = "16px Arial";
+                ctx.fillText("BPM", ox + 90, oy + 55);
+
+                ctx.fillStyle = zoneColor;
+                ctx.font = "14px Arial";
+                ctx.fillText(zoneLabel, ox + 2, oy + 80);
+
+                if (hrRaw !== null && Math.abs(hrRaw - hrSmooth) > 2) {
+                    ctx.fillStyle = "rgb(130, 130, 130)";
+                    ctx.font = "12px Arial";
+                    ctx.fillText(`raw ${Math.round(hrRaw)}`, ox + 80, oy + 80);
+                }
+            } else {
+                ctx.fillStyle = "rgb(130, 130, 130)";
+                ctx.font = "bold 36px Arial";
+                ctx.fillText("-- BPM", ox + 2, oy + 60);
+            }
+
+            // Mini History Bar Chart
+            if (hrHistory.length > 1) {
+                const barYBase = oy + 115;
+                const hrMin = Math.min(...hrHistory);
+                const hrMax = Math.max(...hrHistory);
+                const hrRange = Math.max(hrMax - hrMin, 10);
+                const slotW = CFG.bar_width / Math.max(hrHistory.length, 1);
+
+                hrHistory.forEach((val, i) => {
+                    const barH = (CFG.bar_height * (val - hrMin) / hrRange) + 2;
+                    const bx = ox + i * slotW;
+                    const [_, bc] = hrZone(val);
+                    
+                    ctx.fillStyle = bc;
+                    ctx.fillRect(bx, barYBase - barH, Math.max(slotW - 2, 1), barH);
+                });
+            }
+
+            // 3. FPS
+            ctx.fillStyle = "rgb(120, 120, 120)";
+            ctx.font = "12px Arial";
+            const fpsStr = `FPS ${Math.round(fps)}`;
+            const fw = ctx.measureText(fpsStr).width;
+            ctx.fillText(fpsStr, canvas.width - fw - 8, canvas.height - 8);
+        }
+
+        // --- Main Loop ---
+        function onResults(results) {
+            if (!isRunning) return;
+
+            // Draw video frame to canvas
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+            
+            // Extract Face Box
+            if (results.detections.length > 0) {
+                currentFaceBox = results.detections[0].boundingBox;
+            } else {
+                currentFaceBox = null;
+            }
+
+            // Calculate FPS
+            const now = performance.now();
+            fpsTimes.push(now);
+            if (fpsTimes.length > 30) fpsTimes.shift();
+            const fps = fpsTimes.length > 1 ? (fpsTimes.length / ((fpsTimes[fpsTimes.length - 1] - fpsTimes[0]) / 1000)) : 0;
+
+            // HR Poll (Throttled)
+            if (now - lastPollTime >= CFG.hr_poll_interval) {
+                const hrResult = estimateHeartRate(); // MOCK CALL
+                if (hrResult !== null) {
+                    hrRaw = hrResult;
+                    hrHistory.push(hrRaw);
+                    if (hrHistory.length > CFG.hr_history_window) hrHistory.shift();
+                    
+                    hrSmooth = hrHistory.reduce((a, b) => a + b, 0) / hrHistory.length;
+                } else {
+                    hrRaw = null;
+                }
+                lastPollTime = now;
+            }
+
+            // Draw everything
+            drawOverlay(fps);
+            ctx.restore();
+        }
+
+        // --- Initialization ---
+        async function init() {
+            faceDetection = new FaceDetection({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+            }});
+            faceDetection.setOptions({
+                model: 'short',
+                minDetectionConfidence: 0.5
+            });
+            faceDetection.onResults(onResults);
+
+            camera = new Camera(video, {
+                onFrame: async () => {
+                    if (isRunning) {
+                        await faceDetection.send({image: video});
+                    }
+                },
+                width: 640,
+                height: 480
+            });
+        }
+
+        // --- Controls ---
+        document.getElementById('startBtn').addEventListener('click', () => {
+            if (!camera) init();
+            isRunning = true;
+            camera.start();
+            document.getElementById('startBtn').disabled = true;
+        });
+
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            isRunning = false;
+            if (camera) camera.stop();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hrHistory = [];
+            hrRaw = null;
+            hrSmooth = null;
+            document.getElementById('startBtn').disabled = false;
+        });
+    </script>
+</body>
+</html>
